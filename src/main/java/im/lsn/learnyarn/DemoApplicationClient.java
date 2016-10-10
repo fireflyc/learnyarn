@@ -4,7 +4,13 @@ import im.lsn.learnyarn.am.ApplicationMaster;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.io.DataOutputBuffer;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ClassUtil;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationResponse;
@@ -18,6 +24,7 @@ import org.apache.hadoop.yarn.util.Records;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -44,7 +51,19 @@ public class DemoApplicationClient {
         this.appMasterJar = appMasterJar;
     }
 
+    private ByteBuffer setupTokens(String username) throws IOException {
+        UserGroupInformation ugi = UserGroupInformation.createProxyUser(username, UserGroupInformation.getCurrentUser());
+        LOG.info(String.format("Creating proxyuser %s impersonated by %s", ugi.getUserName(),
+                UserGroupInformation.getCurrentUser()));
+        Credentials credentials = ugi.getCredentials();
+        DataOutputBuffer dob = new DataOutputBuffer();
+        credentials.writeTokenStorageToStream(dob);
+        return ByteBuffer.wrap(dob.getData(), 0, dob.getLength()).duplicate();
+    }
+
     public ApplicationId submit() throws IOException, YarnException {
+        FileSystem fs = FileSystem.get(conf);
+
         YarnClientApplication app = yarnClient.createApplication();
         GetNewApplicationResponse appResponse = app.getNewApplicationResponse();
         Resource clusterMax = appResponse.getMaximumResourceCapability(); //集群最大资源
@@ -56,7 +75,7 @@ public class DemoApplicationClient {
 
         //定义资源
         Resource amResource = Records.newRecord(Resource.class);
-        amResource.setMemorySize(Math.min(clusterMax.getMemorySize(), 1));
+        amResource.setMemory(Math.min(clusterMax.getMemory(), 1));
         amResource.setVirtualCores(Math.min(clusterMax.getVirtualCores(), 4));
         appContext.setResource(amResource);
 
@@ -75,14 +94,37 @@ public class DemoApplicationClient {
         //添加执行的Jar
         Map<String, LocalResource> localResourceMap = new HashMap<String, LocalResource>();
         File appMasterJarFile = new File(appMasterJar);
-        localResourceMap.put(appMasterJarFile.getName(), toLocalResource(appMasterJarFile));
+        localResourceMap.put(appMasterJarFile.getName(), toLocalResource(fs, appResponse.getApplicationId().toString(),
+                appMasterJarFile));
         clc.setLocalResources(localResourceMap);
         appContext.setAMContainerSpec(clc);
+
 
         Map<String, String> envMap = new HashMap<String, String>();
         envMap.put("CLASSPATH", hadoopClassPath());
         envMap.put("LANG", "en_US.UTF-8");
         clc.setEnvironment(envMap);
+
+        //token
+        if (UserGroupInformation.isSecurityEnabled()) {
+            String tokenRenewer = conf.get(YarnConfiguration.RM_PRINCIPAL);
+            if (tokenRenewer == null || tokenRenewer.length() == 0) {
+                throw new IOException("Can't get Master Kerberos principal for the RM to use as renewer");
+            }
+            Credentials credentials = new Credentials();
+            org.apache.hadoop.security.token.Token<?>[] tokens = fs.addDelegationTokens(tokenRenewer, credentials);
+            if (LOG.isInfoEnabled()) {
+                if (tokens != null) {
+                    for (org.apache.hadoop.security.token.Token<?> token : tokens) {
+                        LOG.info("Got dt for " + fs.getUri() + "; " + token);
+                    }
+                }
+            }
+            DataOutputBuffer dob = new DataOutputBuffer();
+            credentials.writeTokenStorageToStream(dob);
+            clc.setTokens(ByteBuffer.wrap(dob.getData(), 0, dob.getLength()));
+        }
+
         //提交
         return yarnClient.submitApplication(appContext);
     }
@@ -101,9 +143,23 @@ public class DemoApplicationClient {
         return classPathEnv.toString();
     }
 
-    private LocalResource toLocalResource(File file) {
-        return LocalResource.newInstance(ConverterUtils.getYarnUrlFromURI(file.toURI()),
-                LocalResourceType.FILE, LocalResourceVisibility.PRIVATE, file.length(), file.lastModified());
+
+    protected Path copyToHdfs(FileSystem fs, String appId, String srcFilePath) throws IOException {
+        Path src = new Path(srcFilePath);
+        String suffix = ".staging" + File.separator + appId + File.separator + src.getName();
+        Path dst = new Path(fs.getHomeDirectory(), suffix);
+        if (!fs.exists(dst.getParent())) {
+            FileSystem.mkdirs(fs, dst.getParent(), FsPermission.createImmutable((short) Integer.parseInt("755", 8)));
+        }
+        fs.copyFromLocalFile(src, dst);
+        return dst;
+    }
+
+    private LocalResource toLocalResource(FileSystem fs, String appId, File file) throws IOException {
+        Path hdfsFile = copyToHdfs(fs, appId, file.getPath());
+        FileStatus stat = fs.getFileStatus(hdfsFile);
+        return LocalResource.newInstance(ConverterUtils.getYarnUrlFromURI(hdfsFile.toUri()),
+                LocalResourceType.FILE, LocalResourceVisibility.PRIVATE, stat.getLen(), stat.getModificationTime());
     }
 
     public static void main(String args[]) throws IOException, YarnException, InterruptedException {
