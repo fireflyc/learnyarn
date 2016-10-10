@@ -51,16 +51,6 @@ public class DemoApplicationClient {
         this.appMasterJar = appMasterJar;
     }
 
-    private ByteBuffer setupTokens(String username) throws IOException {
-        UserGroupInformation ugi = UserGroupInformation.createProxyUser(username, UserGroupInformation.getCurrentUser());
-        LOG.info(String.format("Creating proxyuser %s impersonated by %s", ugi.getUserName(),
-                UserGroupInformation.getCurrentUser()));
-        Credentials credentials = ugi.getCredentials();
-        DataOutputBuffer dob = new DataOutputBuffer();
-        credentials.writeTokenStorageToStream(dob);
-        return ByteBuffer.wrap(dob.getData(), 0, dob.getLength()).duplicate();
-    }
-
     public ApplicationId submit() throws IOException, YarnException {
         FileSystem fs = FileSystem.get(conf);
 
@@ -83,13 +73,13 @@ public class DemoApplicationClient {
         StringBuilder cmd = new StringBuilder();
         cmd.append("\"" + ApplicationConstants.Environment.JAVA_HOME.$() + "/bin/java\"")
                 .append(" ")
-                .append(appMasterMainClass)
+                .append(appMasterMainClass);
+        if (conf.getBoolean(YarnConfiguration.IS_MINI_YARN_CLUSTER, false)) {
+            cmd.append(" ").append("debug").append(" ");
+        }
+        cmd.append("1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDOUT)
                 .append(" ")
-                .append("1>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR +
-                        Path.SEPARATOR + ApplicationConstants.STDOUT)
-                .append(" ")
-                .append("2>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR +
-                        Path.SEPARATOR + ApplicationConstants.STDERR);
+                .append("2>" + ApplicationConstants.LOG_DIR_EXPANSION_VAR + Path.SEPARATOR + ApplicationConstants.STDERR);
         clc.setCommands(Collections.singletonList(cmd.toString()));
         //添加执行的Jar
         Map<String, LocalResource> localResourceMap = new HashMap<String, LocalResource>();
@@ -139,6 +129,10 @@ public class DemoApplicationClient {
                 YarnConfiguration.DEFAULT_YARN_APPLICATION_CLASSPATH)) {
             classPathEnv.append(File.pathSeparatorChar);
             classPathEnv.append(c.trim());
+        }
+        if (conf.getBoolean(YarnConfiguration.IS_MINI_YARN_CLUSTER, false)) {
+            classPathEnv.append(File.pathSeparatorChar);
+            classPathEnv.append(System.getProperty("java.class.path"));
         }
         return classPathEnv.toString();
     }
