@@ -73,7 +73,8 @@ public class DemoApplicationClient {
         StringBuilder cmd = new StringBuilder();
         cmd.append("\"" + ApplicationConstants.Environment.JAVA_HOME.$() + "/bin/java\"")
                 .append(" ")
-                .append(appMasterMainClass);
+                .append(appMasterMainClass)
+                .append(" ");
         if (conf.getBoolean(YarnConfiguration.IS_MINI_YARN_CLUSTER, false)) {
             cmd.append(" ").append("debug").append(" ");
         }
