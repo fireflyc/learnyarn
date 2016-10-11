@@ -1,15 +1,22 @@
 package im.lsn.learnyarn.am;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
+import org.apache.hadoop.yarn.api.records.Priority;
+import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.client.api.AMRMClient;
 import org.apache.hadoop.yarn.client.api.async.AMRMClientAsync;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.util.Records;
 
 import java.io.IOException;
 
 public class ApplicationMaster {
+    private static final Log LOG = LogFactory.getLog(ApplicationMaster.class);
+
     public static void main(String[] args) throws IOException, YarnException, InterruptedException {
         Configuration conf = new YarnConfiguration();
 
@@ -27,15 +34,12 @@ public class ApplicationMaster {
             conf.set(YarnConfiguration.RM_WEBAPP_ADDRESS, "localhost:8088");
             conf.setBoolean(YarnConfiguration.YARN_MINICLUSTER_FIXED_PORTS, true);
         }
-        AMRMClientAsync<AMRMClient.ContainerRequest> resourceManager = AMRMClientAsync.createAMRMClientAsync(1000,
-                new ApplicationMasterCallback());
-        resourceManager.init(conf);
-        resourceManager.start();
-        RegisterApplicationMasterResponse registration = resourceManager.registerApplicationMaster("", -1, "");
-        while (true) {
-            System.out.println("(stdout)Hello World");
-            System.err.println("(stderr)Hello World");
+        AMRMClientService amrmClientService = new AMRMClientService(conf);
+        amrmClientService.start();
+        while (!amrmClientService.isStop()) {
+            LOG.info(amrmClientService.getCounter());
             Thread.sleep(1000);
         }
+        amrmClientService.clean();
     }
 }
